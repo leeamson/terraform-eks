@@ -1,4 +1,4 @@
-#!/bin/bash
+##!/bin/bash
 
 # =============================================================================
 # Script: create-terraform-eks-project.sh
