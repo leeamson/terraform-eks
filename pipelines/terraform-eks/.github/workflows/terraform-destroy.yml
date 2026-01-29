@@ -1,0 +1,94 @@
+# =============================================================================
+# Terraform Destroy Workflow
+# Manual trigger only with required confirmation
+# =============================================================================
+
+name: 'Terraform Destroy'
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to destroy'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      confirm:
+        description: 'Type environment name to confirm destruction'
+        required: true
+        type: string
+
+env:
+  TF_LOG: INFO
+  AWS_REGION: eu-west-1
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # ===========================================================================
+  # Validation
+  # ===========================================================================
+  validate:
+    name: 'Validate Destruction Request'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Validate confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "${{ github.event.inputs.environment }}" ]; then
+            echo "❌ Confirmation does not match environment name!"
+            echo "Expected: ${{ github.event.inputs.environment }}"
+            echo "Got: ${{ github.event.inputs.confirm }}"
+            exit 1
+          fi
+          echo "✅ Confirmation validated"
+
+  # ===========================================================================
+  # Terraform Destroy
+  # ===========================================================================
+  terraform-destroy:
+    name: 'Destroy - ${{ github.event.inputs.environment }}'
+    needs: validate
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.event.inputs.environment }}-destroy
+    defaults:
+      run:
+        working-directory: environments/${{ github.event.inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Terraform Destroy Plan
+        run: |
+          terraform plan -destroy -input=false \
+            -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}"
+
+      - name: Terraform Destroy
+        run: |
+          terraform destroy -auto-approve -input=false \
+            -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}"
+
+      - name: Cleanup Complete
+        run: |
+          echo "✅ Environment ${{ github.event.inputs.environment }} has been destroyed"

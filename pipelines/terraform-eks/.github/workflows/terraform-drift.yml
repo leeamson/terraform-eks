@@ -1,0 +1,288 @@
+# =============================================================================
+# Terraform Drift Detection
+# Scheduled workflow to detect configuration drift
+# =============================================================================
+
+name: 'Terraform Drift Detection'
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 6 AM UTC
+  
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to check (leave empty for all)'
+        required: false
+        type: choice
+        options:
+          - ''
+          - dev
+          - staging
+          - prod
+
+env:
+  TF_LOG: INFO
+  AWS_REGION: eu-west-1
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+
+jobs:
+  # ===========================================================================
+  # Drift Detection - Dev
+  # ===========================================================================
+  drift-dev:
+    name: 'Drift - Dev'
+    runs-on: ubuntu-latest
+    if: github.event.inputs.environment == '' || github.event.inputs.environment == 'dev'
+    defaults:
+      run:
+        working-directory: environments/dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Terraform Plan (Drift Detection)
+        id: plan
+        run: |
+          set +e
+          terraform plan -input=false -detailed-exitcode -no-color \
+            -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+            2>&1 | tee plan_output.txt
+          echo "exitcode=$?" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Check for Drift
+        id: drift
+        run: |
+          if [ "${{ steps.plan.outputs.exitcode }}" == "2" ]; then
+            echo "drift=true" >> $GITHUB_OUTPUT
+            echo "⚠️ Drift detected in dev!"
+          else
+            echo "drift=false" >> $GITHUB_OUTPUT
+            echo "✅ No drift in dev"
+          fi
+
+      - name: Create Issue on Drift
+        if: steps.drift.outputs.drift == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('environments/dev/plan_output.txt', 'utf8');
+            
+            const title = `🚨 Terraform Drift Detected - dev`;
+            const body = `## Drift Detection Report
+            
+            **Environment:** \`dev\`
+            **Detected:** ${new Date().toISOString()}
+            **Workflow:** [Run #${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            
+            ### Plan Output
+            
+            <details>
+            <summary>Show Details</summary>
+            
+            \`\`\`
+            ${planOutput.substring(0, 60000)}
+            \`\`\`
+            
+            </details>
+            
+            ### Action Required
+            
+            Please review the drift and either:
+            1. Apply the Terraform configuration to remediate
+            2. Update the Terraform code to match the current state
+            3. Investigate manual changes made outside of Terraform
+            `;
+            
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'drift,dev'
+            });
+            
+            if (issues.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['drift', 'dev', 'terraform']
+              });
+            }
+
+  # ===========================================================================
+  # Drift Detection - Staging
+  # ===========================================================================
+  drift-staging:
+    name: 'Drift - Staging'
+    runs-on: ubuntu-latest
+    if: github.event.inputs.environment == '' || github.event.inputs.environment == 'staging'
+    defaults:
+      run:
+        working-directory: environments/staging
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Terraform Plan (Drift Detection)
+        id: plan
+        run: |
+          set +e
+          terraform plan -input=false -detailed-exitcode -no-color \
+            -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+            2>&1 | tee plan_output.txt
+          echo "exitcode=$?" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Check for Drift
+        id: drift
+        run: |
+          if [ "${{ steps.plan.outputs.exitcode }}" == "2" ]; then
+            echo "drift=true" >> $GITHUB_OUTPUT
+          else
+            echo "drift=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Issue on Drift
+        if: steps.drift.outputs.drift == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('environments/staging/plan_output.txt', 'utf8');
+            
+            const title = `🚨 Terraform Drift Detected - staging`;
+            const body = `## Drift Detection Report\n\n**Environment:** staging\n**Detected:** ${new Date().toISOString()}\n\n<details>\n<summary>Plan Output</summary>\n\n\`\`\`\n${planOutput.substring(0, 60000)}\n\`\`\`\n</details>`;
+            
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'drift,staging'
+            });
+            
+            if (issues.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['drift', 'staging', 'terraform']
+              });
+            }
+
+  # ===========================================================================
+  # Drift Detection - Prod
+  # ===========================================================================
+  drift-prod:
+    name: 'Drift - Prod'
+    runs-on: ubuntu-latest
+    if: github.event.inputs.environment == '' || github.event.inputs.environment == 'prod'
+    defaults:
+      run:
+        working-directory: environments/prod
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Terraform Plan (Drift Detection)
+        id: plan
+        run: |
+          set +e
+          terraform plan -input=false -detailed-exitcode -no-color \
+            -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+            2>&1 | tee plan_output.txt
+          echo "exitcode=$?" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Check for Drift
+        id: drift
+        run: |
+          if [ "${{ steps.plan.outputs.exitcode }}" == "2" ]; then
+            echo "drift=true" >> $GITHUB_OUTPUT
+          else
+            echo "drift=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Issue on Drift
+        if: steps.drift.outputs.drift == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('environments/prod/plan_output.txt', 'utf8');
+            
+            const title = `🚨 Terraform Drift Detected - prod`;
+            const body = `## Drift Detection Report\n\n**Environment:** prod\n**Detected:** ${new Date().toISOString()}\n\n<details>\n<summary>Plan Output</summary>\n\n\`\`\`\n${planOutput.substring(0, 60000)}\n\`\`\`\n</details>`;
+            
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'drift,prod'
+            });
+            
+            if (issues.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['drift', 'prod', 'terraform']
+              });
+            }

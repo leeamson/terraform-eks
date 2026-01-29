@@ -1,0 +1,259 @@
+# =============================================================================
+# Terraform Apply Workflow
+# Triggers on merge to main branch or manual dispatch
+# =============================================================================
+
+name: 'Terraform Apply'
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'environments/**'
+      - 'modules/**'
+  
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+        default: plan
+
+env:
+  TF_LOG: INFO
+  AWS_REGION: eu-west-1
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # ===========================================================================
+  # Detect Changed Environments (for push events)
+  # ===========================================================================
+  detect-changes:
+    name: 'Detect Changes'
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    outputs:
+      dev: ${{ steps.filter.outputs.dev }}
+      staging: ${{ steps.filter.outputs.staging }}
+      prod: ${{ steps.filter.outputs.prod }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect changed environments
+        uses: dorny/paths-filter@v2
+        id: filter
+        with:
+          filters: |
+            dev:
+              - 'environments/dev/**'
+              - 'modules/**'
+            staging:
+              - 'environments/staging/**'
+              - 'modules/**'
+            prod:
+              - 'environments/prod/**'
+              - 'modules/**'
+
+  # ===========================================================================
+  # Apply - Dev (Auto on push)
+  # ===========================================================================
+  apply-dev:
+    name: 'Apply - Dev'
+    needs: detect-changes
+    if: github.event_name == 'push' && needs.detect-changes.outputs.dev == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: dev
+      url: ${{ steps.get-url.outputs.url }}
+    defaults:
+      run:
+        working-directory: environments/dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Terraform Apply
+        run: |
+          terraform apply -auto-approve -input=false \
+            -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}"
+
+      - name: Get Outputs
+        id: get-url
+        run: |
+          echo "url=$(terraform output -raw eks_cluster_endpoint 2>/dev/null || echo 'N/A')" >> $GITHUB_OUTPUT
+
+  # ===========================================================================
+  # Apply - Staging (Auto on push, requires approval)
+  # ===========================================================================
+  apply-staging:
+    name: 'Apply - Staging'
+    needs: [detect-changes, apply-dev]
+    if: |
+      always() && 
+      github.event_name == 'push' && 
+      needs.detect-changes.outputs.staging == 'true' &&
+      (needs.apply-dev.result == 'success' || needs.apply-dev.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: ${{ steps.get-url.outputs.url }}
+    defaults:
+      run:
+        working-directory: environments/staging
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Terraform Apply
+        run: |
+          terraform apply -auto-approve -input=false \
+            -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}"
+
+      - name: Get Outputs
+        id: get-url
+        run: |
+          echo "url=$(terraform output -raw eks_cluster_endpoint 2>/dev/null || echo 'N/A')" >> $GITHUB_OUTPUT
+
+  # ===========================================================================
+  # Apply - Prod (Auto on push, requires approval)
+  # ===========================================================================
+  apply-prod:
+    name: 'Apply - Prod'
+    needs: [detect-changes, apply-staging]
+    if: |
+      always() && 
+      github.event_name == 'push' && 
+      needs.detect-changes.outputs.prod == 'true' &&
+      (needs.apply-staging.result == 'success' || needs.apply-staging.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+      url: ${{ steps.get-url.outputs.url }}
+    defaults:
+      run:
+        working-directory: environments/prod
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Terraform Apply
+        run: |
+          terraform apply -auto-approve -input=false \
+            -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}"
+
+      - name: Get Outputs
+        id: get-url
+        run: |
+          echo "url=$(terraform output -raw eks_cluster_endpoint 2>/dev/null || echo 'N/A')" >> $GITHUB_OUTPUT
+
+  # ===========================================================================
+  # Manual Deployment
+  # ===========================================================================
+  manual-deploy:
+    name: 'Manual - ${{ github.event.inputs.environment }}'
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.event.inputs.environment }}
+    defaults:
+      run:
+        working-directory: environments/${{ github.event.inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Terraform Plan
+        if: github.event.inputs.action == 'plan'
+        run: |
+          terraform plan -input=false \
+            -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}"
+
+      - name: Terraform Apply
+        if: github.event.inputs.action == 'apply'
+        run: |
+          terraform apply -auto-approve -input=false \
+            -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}"
+
+      - name: Show Outputs
+        if: github.event.inputs.action == 'apply'
+        run: terraform output
