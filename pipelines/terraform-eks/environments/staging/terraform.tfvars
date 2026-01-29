@@ -8,14 +8,22 @@ project_name = "eks-project"
 #──────────────────────────────────────────────────────────────────────────────
 # VPC Configuration
 #──────────────────────────────────────────────────────────────────────────────
-use_existing_vpc = true
-existing_vpc_id  = "vpc-XXXXXXXXX"  # UPDATE THIS
+# Change to false if you want to create a new VPC
+use_existing_vpc = false
 
-existing_subnet_ids = [
-  "subnet-XXXXXXXXX",  # UPDATE THIS
-  "subnet-XXXXXXXXX",
-  "subnet-XXXXXXXXX"
-]
+#use_existing_vpc = true
+#existing_vpc_id  = "vpc-XXXXXXXXX"  # UPDATE THIS
+
+# These are ignored when use_existing_vpc = false
+existing_vpc_id     = ""
+existing_subnet_ids = []
+
+#If you have existing VPC and subnet, you can add the IDs below
+#existing_subnet_ids = [
+#  "subnet-XXXXXXXXX",  # UPDATE THIS
+#  "subnet-XXXXXXXXX",
+#  "subnet-XXXXXXXXX"
+#]
 
 # If creating new VPC (set use_existing_vpc = false)
 vpc_name           = "staging-vpc"
